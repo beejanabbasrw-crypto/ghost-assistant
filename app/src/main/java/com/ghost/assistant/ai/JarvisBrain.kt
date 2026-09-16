@@ -68,8 +68,11 @@ class JarvisBrain(private val context: Context) {
 
     private fun resolveLocalIntelligence(clean: String, name: String): String? {
         return when {
-            clean.matches(Regex("^(hello|hi|hey|greetings|jarvis).*")) -> {
+            clean.matches(Regex("^(hello|hi|hey|greetings|jarvis|ghost).*")) -> {
                 "Always at your service, $name. Workshop power is steady and awaiting your commands."
+            }
+            clean.contains("wake word") || clean.contains("hotword") || clean.contains("wake up word") -> {
+                "The primary tactical wake word is 'GHOST', $name. You can address me anytime by stating 'GHOST' or 'Hey Ghost', or speaking commands like 'Ghost, open Chrome' or 'Ghost, send message to Mom on WhatsApp hello'."
             }
             clean.contains("who are you") || clean.contains("what are you") || clean.contains("your name") -> {
                 "I am J.A.R.V.I.S. — Just A Rather Very Intelligent System. Configured specifically as your tactical assistant in the G.H.O.S.T. terminal, $name."

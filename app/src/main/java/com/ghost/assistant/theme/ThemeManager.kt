@@ -14,8 +14,10 @@ object ThemeManager {
     private const val KEY_USER_CALLSIGN = "key_user_callsign"
     private const val KEY_COMMS_ENABLED = "key_comms_enabled"
     private const val KEY_AI_CUSTOM_ENDPOINT = "key_ai_custom_endpoint"
+    private const val KEY_WAKE_WORD_ENABLED = "key_wake_word_enabled"
 
     const val DEFAULT_USER_CALLSIGN = "Abdur"
+    const val WAKE_WORD = "GHOST"
 
     enum class ThemeMode {
         STEALTH, // Dark Mode (Default Stark Workshop HUD)
@@ -73,6 +75,14 @@ object ThemeManager {
 
     fun setAiCustomEndpoint(context: Context, endpoint: String) {
         getPrefs(context).edit().putString(KEY_AI_CUSTOM_ENDPOINT, endpoint.trim()).apply()
+    }
+
+    fun isWakeWordEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_WAKE_WORD_ENABLED, true)
+    }
+
+    fun setWakeWordEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_WAKE_WORD_ENABLED, enabled).apply()
     }
 
     fun isStealth(context: Context): Boolean {

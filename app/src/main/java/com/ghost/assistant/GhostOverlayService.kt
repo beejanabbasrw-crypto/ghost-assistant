@@ -19,6 +19,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
+import com.ghost.assistant.theme.ThemeManager
 
 class GhostOverlayService : Service() {
 
@@ -41,6 +42,12 @@ class GhostOverlayService : Service() {
         }
 
         setupOverlayWindow()
+
+        if (ThemeManager.isWakeWordEnabled(this)) {
+            hudView.postDelayed({
+                brain.startListening(isWakeWordLoop = true)
+            }, 800)
+        }
     }
 
     private fun startForegroundNotification() {
@@ -86,7 +93,7 @@ class GhostOverlayService : Service() {
 
         hudView = TacticalReticleView(this).apply {
             setOnClickListener {
-                brain.startListening()
+                brain.startListening(isWakeWordLoop = false)
             }
         }
 

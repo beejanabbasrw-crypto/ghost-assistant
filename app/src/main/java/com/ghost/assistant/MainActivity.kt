@@ -328,6 +328,9 @@ class MainActivity : AppCompatActivity() {
             layoutParams = LinearLayout.LayoutParams(220, 220).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
             }
+            setOnClickListener {
+                toggleTacticalHud()
+            }
         }
         reactorLayout.addView(arcReactorView)
 
@@ -343,7 +346,7 @@ class MainActivity : AppCompatActivity() {
 
         val reactorSub = TextView(this).apply {
             val userName = ThemeManager.getUserName(this@MainActivity)
-            text = "Autonomous Defense & Assist Core active for $userName"
+            text = "Autonomous Core active for $userName\nTap Arc Reactor to engage HUD • Wake Word: 'GHOST'"
             textSize = 11f
             setTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
             gravity = Gravity.CENTER_HORIZONTAL
@@ -445,6 +448,7 @@ class MainActivity : AppCompatActivity() {
             .append("• Accessibility Node: ").append(if (accessibilityOk) "[LINKED]" else "[UNBOUND]").append("\n")
             .append("• Hardware Permissions: ").append(if (permsOk) "[AUTHORIZED]" else "[RESTRICTED]").append("\n")
             .append("• Voice Recognition: ").append(if (speechOk) "[OPERATIONAL]" else "[NOT DETECTED]").append("\n")
+            .append("• Wake Word Engine: ").append(if (ThemeManager.isWakeWordEnabled(this)) "[GHOST ACTIVE]" else "[STANDBY]").append("\n")
             .append("• Stark Comms Channel: ").append(if (ThemeManager.isCommsEnabled(this)) "[ACTIVE]" else "[MUTED]")
             .toString()
 
@@ -1039,7 +1043,46 @@ class MainActivity : AppCompatActivity() {
         commsCard.addView(commsLayout)
         content.addView(commsCard)
 
-        // 4. Custom AI Endpoint
+        // 4. Wake Word Detection (Hotword: GHOST)
+        val wakeWordTitle = TextView(this).apply {
+            text = "VOICE WAKE WORD ENGINE (HOTWORD: GHOST)"
+            textSize = 12f
+            paint.isFakeBoldText = true
+            setTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
+            setPadding(8, 28, 0, 12)
+        }
+        content.addView(wakeWordTitle)
+
+        val wakeWordCard = createHoloCard()
+        val wakeWordLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(28, 20, 28, 20)
+        }
+
+        val wakeWordCheck = CheckBox(this).apply {
+            text = "Enable Wake Word Recognition ('GHOST' / 'Hey Ghost')"
+            isChecked = ThemeManager.isWakeWordEnabled(this@MainActivity)
+            setTextColor(ThemeManager.getPrimaryTextColor(this@MainActivity))
+            setOnCheckedChangeListener { _, isChecked ->
+                ThemeManager.setWakeWordEnabled(this@MainActivity, isChecked)
+                Toast.makeText(this@MainActivity, "Wake word engine ('GHOST') ${if (isChecked) "activated" else "standby"}.", Toast.LENGTH_SHORT).show()
+                updateDashboardTelemetry()
+            }
+        }
+        wakeWordLayout.addView(wakeWordCheck)
+
+        val wakeWordDesc = TextView(this).apply {
+            text = "Autonomous Voice Activation:\nSay 'GHOST' or 'Hey Ghost' to wake the assistant, or command directly: e.g. 'Ghost, open Chrome' or 'Ghost, send message to Abdur on WhatsApp hello'."
+            textSize = 11f
+            setTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
+            setPadding(8, 12, 8, 4)
+            setLineSpacing(4f, 1f)
+        }
+        wakeWordLayout.addView(wakeWordDesc)
+        wakeWordCard.addView(wakeWordLayout)
+        content.addView(wakeWordCard)
+
+        // 5. Custom AI Endpoint
         val aiTitle = TextView(this).apply {
             text = "JARVIS AI ENDPOINT PROTOCOL"
             textSize = 12f

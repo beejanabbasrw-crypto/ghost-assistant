@@ -149,7 +149,15 @@ class GhostBrain(
             override fun onDone(id: String?) {
                 if (id == utteranceId) {
                     updateState(BrainState.IDLE)
-                    onDone?.let { mainHandler.post(it) }
+                    if (onDone != null) {
+                        mainHandler.post(onDone)
+                    } else if (ThemeManager.isWakeWordEnabled(context)) {
+                        mainHandler.postDelayed({
+                            if (currentState == BrainState.IDLE) {
+                                startListening(isWakeWordLoop = true)
+                            }
+                        }, 500)
+                    }
                 }
             }
 
@@ -213,7 +221,7 @@ class GhostBrain(
         }
     }
 
-    fun startListening() {
+    fun startListening(isWakeWordLoop: Boolean = false) {
         mainHandler.post {
             if (currentState == BrainState.SPEAKING) {
                 stopSpeaking()
@@ -221,13 +229,17 @@ class GhostBrain(
             }
 
             if (currentState == BrainState.LISTENING) {
-                cancelListening()
+                if (!isWakeWordLoop) {
+                    cancelListening()
+                }
                 return@post
             }
 
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                val userName = getUserName()
-                Toast.makeText(context, "Microphone permission required, $userName.", Toast.LENGTH_LONG).show()
+                if (!isWakeWordLoop) {
+                    val userName = getUserName()
+                    Toast.makeText(context, "Microphone permission required, $userName.", Toast.LENGTH_LONG).show()
+                }
                 updateState(BrainState.ERROR)
                 scope.launch {
                     kotlinx.coroutines.delay(1500)
@@ -237,8 +249,10 @@ class GhostBrain(
             }
 
             if (!ensureSpeechRecognizer()) {
-                val userName = getUserName()
-                Toast.makeText(context, "Speech recognition engine unavailable, $userName.", Toast.LENGTH_LONG).show()
+                if (!isWakeWordLoop) {
+                    val userName = getUserName()
+                    Toast.makeText(context, "Speech recognition engine unavailable, $userName.", Toast.LENGTH_LONG).show()
+                }
                 updateState(BrainState.ERROR)
                 scope.launch {
                     kotlinx.coroutines.delay(1500)
@@ -247,9 +261,11 @@ class GhostBrain(
                 return@post
             }
 
-            vibrate(50)
+            if (!isWakeWordLoop) {
+                vibrate(50)
+                Toast.makeText(context, "J.A.R.V.I.S. listening...", Toast.LENGTH_SHORT).show()
+            }
             updateState(BrainState.LISTENING)
-            Toast.makeText(context, "J.A.R.V.I.S. listening...", Toast.LENGTH_SHORT).show()
 
             try {
                 speechRecognizer?.cancel()
@@ -366,6 +382,20 @@ class GhostBrain(
             ensureSpeechRecognizer()
         }
 
+        // If continuous wake word mode is active, silently loop without intrusive errors
+        if (ThemeManager.isWakeWordEnabled(context) &&
+            (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
+        ) {
+            updateState(BrainState.IDLE)
+            scope.launch {
+                delay(400)
+                if (currentState == BrainState.IDLE) {
+                    startListening()
+                }
+            }
+            return
+        }
+
         updateState(BrainState.ERROR)
         mainHandler.post {
             Toast.makeText(context, errorMsg, Toast.LENGTH_SHORT).show()
@@ -408,15 +438,37 @@ class GhostBrain(
     fun processIntent(rawQuery: String) {
         updateState(BrainState.PROCESSING)
         val userName = getUserName()
-        val command = rawQuery.trim().lowercase(Locale.US)
+        val trimmed = rawQuery.trim()
+
+        // Wake word pattern matching for "GHOST" / "HEY GHOST" / "OK GHOST"
+        val wakeWordRegex = Regex("^(?:hey\\s+|ok\\s+|okay\\s+|yo\\s+)?ghost(?:[,\\s]+(?:please\\s+)?)?", RegexOption.IGNORE_CASE)
+        val isWakeWordInvocation = wakeWordRegex.containsMatchIn(trimmed)
+
+        // Strip the wake word prefix if present
+        val effectiveQuery = if (isWakeWordInvocation) {
+            trimmed.replace(wakeWordRegex, "").trim()
+        } else {
+            trimmed
+        }
+
+        // If user spoke ONLY the wake word (e.g. "GHOST" or "Hey Ghost" or "Ghost wake up")
+        if (isWakeWordInvocation && (effectiveQuery.isBlank() || effectiveQuery.equals("wake up", ignoreCase = true))) {
+            vibrate(80)
+            speak("Yes, $userName? G.H.O.S.T. online and listening.") {
+                startListening(isWakeWordLoop = false)
+            }
+            return
+        }
 
         // 1. Social & Contact Messaging Directive (WhatsApp, Instagram, Facebook, SMS)
-        val messagingDirective = SocialMessagingManager.parseDirective(rawQuery)
+        val messagingDirective = SocialMessagingManager.parseDirective(effectiveQuery)
         if (messagingDirective != null) {
             val (_, reply) = SocialMessagingManager.dispatchMessage(context, messagingDirective, userName)
             speak(reply)
             return
         }
+
+        val command = effectiveQuery.lowercase(Locale.US)
 
         when {
             // Greetings & Identity (Addressing Abdur)
