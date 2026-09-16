@@ -24,6 +24,7 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat
+import com.ghost.assistant.comms.SocialMessagingManager
 import com.ghost.assistant.theme.ThemeManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -409,6 +410,14 @@ class GhostBrain(
         val userName = getUserName()
         val command = rawQuery.trim().lowercase(Locale.US)
 
+        // 1. Social & Contact Messaging Directive (WhatsApp, Instagram, Facebook, SMS)
+        val messagingDirective = SocialMessagingManager.parseDirective(rawQuery)
+        if (messagingDirective != null) {
+            val (_, reply) = SocialMessagingManager.dispatchMessage(context, messagingDirective, userName)
+            speak(reply)
+            return
+        }
+
         when {
             // Greetings & Identity (Addressing Abdur)
             command.matches(Regex("^(hello|hi|hey|ghost|jarvis|wake up|systems? online).*")) -> {
@@ -740,19 +749,23 @@ class GhostBrain(
         speak("I was unable to identify $name on this device, $userName.")
     }
 
-    private fun executeDirectCall(phoneNumber: String) {
+    private fun executeDirectCall(phoneNumberOrName: String) {
         val userName = getUserName()
-        val sanitizedNumber = phoneNumber.replace(Regex("[^0-9+]"), "")
-        if (sanitizedNumber.isEmpty()) {
-            speak("Invalid phone sequence, $userName.")
+        val resolved = SocialMessagingManager.resolveContact(context, phoneNumberOrName)
+        val targetNumber = resolved?.phoneNumber ?: phoneNumberOrName.replace(Regex("[^0-9+]"), "")
+
+        if (targetNumber.isBlank()) {
+            speak("I was unable to locate $phoneNumberOrName in your contact ledger, $userName.")
             return
         }
-        val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$sanitizedNumber")).apply {
+
+        val displayName = resolved?.displayName ?: targetNumber
+        val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$targetNumber")).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         try {
             context.startActivity(callIntent)
-            speak("Initiating cellular link to $sanitizedNumber, $userName.")
+            speak("Initiating cellular link to $displayName, $userName.")
         } catch (e: SecurityException) {
             speak("Cellular dial permission denied, $userName.")
         }
@@ -760,23 +773,12 @@ class GhostBrain(
 
     private fun executeSmsRouting(command: String) {
         val userName = getUserName()
-        val parts = command.split(" ", limit = 3)
-        if (parts.size < 3) {
-            speak("Incomplete SMS sequence, $userName. State: text, number, message.", null)
-            return
-        }
-        val targetNumber = parts[1]
-        val message = parts[2]
-
-        val smsIntent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$targetNumber")).apply {
-            putExtra("sms_body", message)
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            context.startActivity(smsIntent)
-            speak("Dispatching message payload to $targetNumber, $userName.")
-        } catch (e: Exception) {
-            speak("SMS transmission failure, $userName.")
+        val directive = SocialMessagingManager.parseDirective(command)
+        if (directive != null) {
+            val (_, reply) = SocialMessagingManager.dispatchMessage(context, directive, userName)
+            speak(reply)
+        } else {
+            speak("Please state the recipient and your message, $userName. For example: send message to John hello.", null)
         }
     }
 
