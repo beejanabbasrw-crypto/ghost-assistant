@@ -103,8 +103,8 @@ class AudioCoreManager(private val context: Context) {
                 )
                 setDataSource(context, uri)
                 setOnCompletionListener {
-                    isPlaying = false
-                    onStateChanged?.invoke(false)
+                    this@AudioCoreManager.isPlaying = false
+                    this@AudioCoreManager.onStateChanged?.invoke(false)
                 }
                 prepare()
                 start()
