@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.GhostAssistant" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/tactical_cyan</item>
+        <item name="colorSecondary">@color/tactical_amber</item>
+        <item name="android:statusBarColor">@color/tactical_black</item>
+        <item name="android:navigationBarColor">@color/tactical_black</item>
+        <item name="android:windowBackground">@color/tactical_black</item>
+    </style>
+</resources>
