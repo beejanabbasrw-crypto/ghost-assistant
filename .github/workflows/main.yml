@@ -1,6 +1,4 @@
-name: Build G.H.O.S.T. Android APK
-
-    on:
+name: Build G.H.O.S.T. Android APK on:
       push:
         branches: [ main ]
       workflow_dispatch:
