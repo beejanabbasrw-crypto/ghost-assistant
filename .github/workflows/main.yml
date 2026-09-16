@@ -1,7 +1,10 @@
-name: Build G.H.O.S.T. Android APK on:
-      push:
-        branches: [ main ]
-      workflow_dispatch:
+name: Build G.H.O.S.T. Android APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
 
     jobs:
       build:
