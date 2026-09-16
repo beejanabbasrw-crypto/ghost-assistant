@@ -2,6 +2,7 @@ package com.ghost.assistant
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Intent
+import android.os.Build
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 
@@ -54,7 +55,8 @@ class GhostAccessibilityService : AccessibilityService() {
      */
     fun clickElementByText(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
-        val matchedNodes = root.findAccessibilityNodeInfosByText(text)
+        val clean = text.trim()
+        val matchedNodes = root.findAccessibilityNodeInfosByText(clean)
         
         for (node in matchedNodes) {
             if (performClickOnNodeOrParent(node)) {
@@ -85,5 +87,25 @@ class GhostAccessibilityService : AccessibilityService() {
 
     fun performGlobalRecents(): Boolean {
         return performGlobalAction(GLOBAL_ACTION_RECENTS)
+    }
+
+    fun performGlobalNotifications(): Boolean {
+        return performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+    }
+
+    fun performGlobalQuickSettings(): Boolean {
+        return performGlobalAction(GLOBAL_ACTION_QUICK_SETTINGS)
+    }
+
+    fun performGlobalLock(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+        } else false
+    }
+
+    fun performGlobalScreenshot(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            performGlobalAction(GLOBAL_ACTION_TAKE_SCREENSHOT)
+        } else false
     }
 }

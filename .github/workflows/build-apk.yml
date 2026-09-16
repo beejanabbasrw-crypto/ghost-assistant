@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Assemble Debug APK
@@ -35,3 +38,13 @@ jobs:
           name: GHOST-Tactical-Assistant-APK
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: github.ref == 'refs/heads/main'
+        with:
+          tag_name: latest
+          name: "G.H.O.S.T. Tactical Assistant"
+          body: "Automated build of G.H.O.S.T. Tactical Assistant with SpeechRecognizer package queries, TextToSpeech engine resolution, and complete voice commands."
+          files: app/build/outputs/apk/debug/app-debug.apk
+        continue-on-error: true

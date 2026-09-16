@@ -34,7 +34,7 @@ class GhostOverlayService : Service() {
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         startForegroundNotification()
 
-        brain = GhostBrain(applicationContext) { state ->
+        brain = GhostBrain(this) { state ->
             hudView.post {
                 hudView.setState(state)
             }
