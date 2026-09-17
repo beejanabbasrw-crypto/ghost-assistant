@@ -88,8 +88,12 @@ class MainActivity : AppCompatActivity() {
                 Manifest.permission.CAMERA,
                 Manifest.permission.CALL_PHONE,
                 Manifest.permission.SEND_SMS,
-                Manifest.permission.READ_CONTACTS
+                Manifest.permission.READ_CONTACTS,
+                Manifest.permission.READ_CALENDAR
             )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                list.add(Manifest.permission.BLUETOOTH_CONNECT)
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 list.add(Manifest.permission.POST_NOTIFICATIONS)
             }
@@ -103,6 +107,9 @@ class MainActivity : AppCompatActivity() {
         val allGranted = permissions.entries.all { it.value }
         if (allGranted) {
             Toast.makeText(this, "Hardware capabilities authorized, $userName.", Toast.LENGTH_SHORT).show()
+            if (ThemeManager.isWakeWordEnabled(this)) {
+                com.ghost.assistant.wakeword.GhostWakeWordService.startService(this)
+            }
         } else {
             Toast.makeText(this, "Some permissions were restricted, $userName.", Toast.LENGTH_LONG).show()
         }
@@ -133,6 +140,12 @@ class MainActivity : AppCompatActivity() {
         jarvisBrain = JarvisBrain(this)
         audioCoreManager = AudioCoreManager(this)
         CommsManager.createNotificationChannel(this)
+
+        if (ThemeManager.isWakeWordEnabled(this) &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        ) {
+            com.ghost.assistant.wakeword.GhostWakeWordService.startService(this)
+        }
 
         setContentView(buildRootLayout())
         showScreen(0)
@@ -412,6 +425,18 @@ class MainActivity : AppCompatActivity() {
         }
         content.addView(btnDiagnostics)
 
+        val btnWakeWordService = createHoloButton("START BACKGROUND WAKE WORD SERVICE ('GHOST')") {
+            val micGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            if (micGranted) {
+                com.ghost.assistant.wakeword.GhostWakeWordService.startService(this)
+                Toast.makeText(this, "Background Wake Word Service engaged ('GHOST').", Toast.LENGTH_SHORT).show()
+                updateDashboardTelemetry()
+            } else {
+                checkAndRequestPermissions()
+            }
+        }
+        content.addView(btnWakeWordService)
+
         val btnCommsAlert = createHoloButton("DISPATCH TEST COMMS ALERT") {
             val userName = ThemeManager.getUserName(this)
             val sent = CommsManager.sendCommsAlert(
@@ -448,7 +473,9 @@ class MainActivity : AppCompatActivity() {
             .append("• Accessibility Node: ").append(if (accessibilityOk) "[LINKED]" else "[UNBOUND]").append("\n")
             .append("• Hardware Permissions: ").append(if (permsOk) "[AUTHORIZED]" else "[RESTRICTED]").append("\n")
             .append("• Voice Recognition: ").append(if (speechOk) "[OPERATIONAL]" else "[NOT DETECTED]").append("\n")
-            .append("• Wake Word Engine: ").append(if (ThemeManager.isWakeWordEnabled(this)) "[GHOST ACTIVE]" else "[STANDBY]").append("\n")
+            .append("• Wake Word Service: ").append(if (ThemeManager.isWakeWordEnabled(this)) "[GHOST LISTENING]" else "[STANDBY]").append("\n")
+            .append("• Notification Node: ").append(if (com.ghost.assistant.notification.GhostNotificationListenerService.isServiceConnected) "[LINKED]" else "[STANDBY]").append("\n")
+            .append("• Laptop Companion: ").append("[${ThemeManager.getCompanionHost(this)}:${ThemeManager.getCompanionPort(this)}]").append("\n")
             .append("• Stark Comms Channel: ").append(if (ThemeManager.isCommsEnabled(this)) "[ACTIVE]" else "[MUTED]")
             .toString()
 
@@ -1065,14 +1092,25 @@ class MainActivity : AppCompatActivity() {
             setTextColor(ThemeManager.getPrimaryTextColor(this@MainActivity))
             setOnCheckedChangeListener { _, isChecked ->
                 ThemeManager.setWakeWordEnabled(this@MainActivity, isChecked)
-                Toast.makeText(this@MainActivity, "Wake word engine ('GHOST') ${if (isChecked) "activated" else "standby"}.", Toast.LENGTH_SHORT).show()
+                if (isChecked) {
+                    val micGranted = ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+                    if (micGranted) {
+                        com.ghost.assistant.wakeword.GhostWakeWordService.startService(this@MainActivity)
+                        Toast.makeText(this@MainActivity, "Wake word engine ('GHOST') active in background.", Toast.LENGTH_SHORT).show()
+                    } else {
+                        checkAndRequestPermissions()
+                    }
+                } else {
+                    com.ghost.assistant.wakeword.GhostWakeWordService.stopService(this@MainActivity)
+                    Toast.makeText(this@MainActivity, "Wake word engine standby.", Toast.LENGTH_SHORT).show()
+                }
                 updateDashboardTelemetry()
             }
         }
         wakeWordLayout.addView(wakeWordCheck)
 
         val wakeWordDesc = TextView(this).apply {
-            text = "Autonomous Voice Activation:\nSay 'GHOST' or 'Hey Ghost' to wake the assistant, or command directly: e.g. 'Ghost, open Chrome' or 'Ghost, send message to Abdur on WhatsApp hello'."
+            text = "Autonomous Background Voice Activation:\nRuns a persistent foreground service with continuous microphone listening for 'Ghost' or 'Hey Ghost'. Pauses during speech to avoid self-triggers, auto-recovers on error, and activates on spoken directives (e.g. 'Ghost, open Chrome' or 'Ghost, play Bohemian Rhapsody')."
             textSize = 11f
             setTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
             setPadding(8, 12, 8, 4)
@@ -1082,7 +1120,109 @@ class MainActivity : AppCompatActivity() {
         wakeWordCard.addView(wakeWordLayout)
         content.addView(wakeWordCard)
 
-        // 5. Custom AI Endpoint
+        // 5. Notification Read & Reply Authorization
+        val notifTitle = TextView(this).apply {
+            text = "NOTIFICATION INTELLIGENCE NODE"
+            textSize = 12f
+            paint.isFakeBoldText = true
+            setTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
+            setPadding(8, 28, 0, 12)
+        }
+        content.addView(notifTitle)
+
+        val notifCard = createHoloCard()
+        val notifLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(28, 20, 28, 20)
+        }
+
+        val btnNotifAuth = createHoloButton("AUTHORIZE NOTIFICATION READ/REPLY ACCESS") {
+            try {
+                val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+            } catch (_: Exception) {}
+        }
+        notifLayout.addView(btnNotifAuth)
+
+        val notifDesc = TextView(this).apply {
+            text = "Enables voice directives like 'Ghost, read notifications' to hear incoming messages and 'Ghost, reply [message]' to respond directly via speech."
+            textSize = 11f
+            setTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
+            setPadding(8, 8, 8, 4)
+        }
+        notifLayout.addView(notifDesc)
+        notifCard.addView(notifLayout)
+        content.addView(notifCard)
+
+        // 6. Laptop Companion Mode Configuration
+        val companionTitle = TextView(this).apply {
+            text = "LAPTOP COMPANION PROTOCOL (DESKTOP MODE)"
+            textSize = 12f
+            paint.isFakeBoldText = true
+            setTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
+            setPadding(8, 28, 0, 12)
+        }
+        content.addView(companionTitle)
+
+        val companionCard = createHoloCard()
+        val companionLayout = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(28, 20, 28, 20)
+        }
+
+        val companionHostEdit = EditText(this).apply {
+            hint = "Desktop Host IP (e.g. 192.168.1.100)..."
+            setHintTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
+            setText(ThemeManager.getCompanionHost(this@MainActivity))
+            textSize = 12f
+            setTextColor(ThemeManager.getPrimaryTextColor(this@MainActivity))
+            setBackgroundResource(R.drawable.holo_input_bg)
+            setPadding(24, 16, 24, 16)
+        }
+        companionLayout.addView(companionHostEdit)
+
+        val companionPortEdit = EditText(this).apply {
+            hint = "Desktop Companion Port (e.g. 8080)..."
+            setHintTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
+            setText(ThemeManager.getCompanionPort(this@MainActivity).toString())
+            textSize = 12f
+            setTextColor(ThemeManager.getPrimaryTextColor(this@MainActivity))
+            setBackgroundResource(R.drawable.holo_input_bg)
+            setPadding(24, 16, 24, 16)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply {
+                topMargin = 12
+            }
+        }
+        companionLayout.addView(companionPortEdit)
+
+        val saveCompanionBtn = createHoloButton("SAVE COMPANION CONFIG") {
+            val host = companionHostEdit.text.toString().trim()
+            val port = companionPortEdit.text.toString().trim().toIntOrNull() ?: 8080
+            ThemeManager.setCompanionHost(this, host)
+            ThemeManager.setCompanionPort(this, port)
+            Toast.makeText(this, "Companion endpoint updated to $host:$port.", Toast.LENGTH_SHORT).show()
+            updateDashboardTelemetry()
+        }.apply {
+            (layoutParams as? LinearLayout.LayoutParams)?.topMargin = 16
+        }
+        companionLayout.addView(saveCompanionBtn)
+
+        val companionDesc = TextView(this).apply {
+            text = "Voice controls for your paired computer: 'Ghost, laptop open Chrome', 'laptop volume up', 'laptop search files for project', 'laptop lock', or 'laptop status'."
+            textSize = 11f
+            setTextColor(ThemeManager.getSecondaryTextColor(this@MainActivity))
+            setPadding(8, 8, 8, 4)
+        }
+        companionLayout.addView(companionDesc)
+        companionCard.addView(companionLayout)
+        content.addView(companionCard)
+
+        // 7. Custom AI Endpoint
         val aiTitle = TextView(this).apply {
             text = "JARVIS AI ENDPOINT PROTOCOL"
             textSize = 12f
@@ -1120,7 +1260,7 @@ class MainActivity : AppCompatActivity() {
         aiCard.addView(aiLayout)
         content.addView(aiCard)
 
-        // 5. Identity Verification Modal
+        // 8. Identity Verification Modal
         val secTitle = TextView(this).apply {
             text = "IDENTITY VERIFICATION & CLEARANCE"
             textSize = 12f

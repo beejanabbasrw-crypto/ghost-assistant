@@ -44,9 +44,7 @@ class GhostOverlayService : Service() {
         setupOverlayWindow()
 
         if (ThemeManager.isWakeWordEnabled(this)) {
-            hudView.postDelayed({
-                brain.startListening(isWakeWordLoop = true)
-            }, 800)
+            com.ghost.assistant.wakeword.GhostWakeWordService.startService(this)
         }
     }
 

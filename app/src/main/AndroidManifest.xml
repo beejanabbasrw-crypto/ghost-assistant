@@ -12,14 +12,28 @@
     <!-- Haptics & Vibration -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
-    <!-- Hardware, Telephony & Contacts -->
+    <!-- Hardware, Telephony, Contacts & Calendar -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+
+    <!-- Device Toggles & System Adjustments -->
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" tools:ignore="ProtectedPermissions" />
+
+    <!-- Alarms, Timers & Boot -->
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     
     <!-- Foreground Service & Notifications -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     
@@ -32,6 +46,7 @@
 
     <uses-feature android:name="android.hardware.camera.flash" android:required="false" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
     <!-- Queries required for Android 11+ (API 30+) package visibility -->
     <queries>
@@ -48,18 +63,26 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- Media / Music Players -->
+        <intent>
+            <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+        </intent>
         <!-- Browsers -->
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="https" />
         </intent>
-        <!-- Social & Messaging Packages -->
+        <!-- Popular Music & Social Packages -->
+        <package android:name="com.spotify.music" />
+        <package android:name="com.google.android.apps.youtube.music" />
+        <package android:name="com.google.android.youtube" />
         <package android:name="com.whatsapp" />
         <package android:name="com.whatsapp.w4b" />
         <package android:name="com.instagram.android" />
         <package android:name="com.facebook.orca" />
         <package android:name="com.facebook.katana" />
+        <package android:name="org.telegram.messenger" />
     </queries>
 
     <application
@@ -92,15 +115,45 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
 
+        <!-- Persistent Background Wake Word Foreground Service -->
+        <service
+            android:name=".wakeword.GhostWakeWordService"
+            android:foregroundServiceType="microphone|specialUse"
+            android:exported="false">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Autonomous Ghost Wake Word Audio Listener" />
+        </service>
+
         <!-- Floating Tactical HUD Foreground Service -->
         <service
             android:name=".GhostOverlayService"
-            android:foregroundServiceType="specialUse"
+            android:foregroundServiceType="microphone|specialUse"
             android:exported="false">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Tactical Floating Assistant Interface" />
         </service>
+
+        <!-- Notification Listener Service (Read & Voice Reply) -->
+        <service
+            android:name=".notification.GhostNotificationListenerService"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Boot Completed Receiver to auto-start wake word listener -->
+        <receiver
+            android:name=".receiver.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>

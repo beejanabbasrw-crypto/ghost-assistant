@@ -24,7 +24,16 @@ import android.speech.tts.UtteranceProgressListener
 import android.util.Log
 import android.widget.Toast
 import androidx.core.content.ContextCompat
-import com.ghost.assistant.comms.SocialMessagingManager
+import com.ghost.assistant.device.DeviceToggleManager
+import com.ghost.assistant.features.AlarmClockManager
+import com.ghost.assistant.features.CalendarManager
+import com.ghost.assistant.features.CompanionManager
+import com.ghost.assistant.features.WeatherManager
+import com.ghost.assistant.media.MusicManager
+import com.ghost.assistant.messaging.ContactMessagingManager
+import com.ghost.assistant.notification.GhostNotificationListenerService
+import com.ghost.assistant.router.GhostIntent
+import com.ghost.assistant.router.IntentRouter
 import com.ghost.assistant.theme.ThemeManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,6 +72,7 @@ class GhostBrain(
     private var speechRecognizer: SpeechRecognizer? = null
     private var isTtsInitialized = false
     private var pendingSpeakText: String? = null
+    private var pendingOnDone: (() -> Unit)? = null
 
     var currentState: BrainState = BrainState.IDLE
         private set
@@ -107,9 +117,11 @@ class GhostBrain(
                 Log.i("GhostBrain", "TextToSpeech successfully initialized.")
 
                 val pending = pendingSpeakText
+                val onDoneCallback = pendingOnDone
                 if (pending != null) {
                     pendingSpeakText = null
-                    speak(pending)
+                    pendingOnDone = null
+                    speak(pending, onDoneCallback)
                 }
             }
         } else {
@@ -129,12 +141,13 @@ class GhostBrain(
 
         Log.i("GhostBrain", "Speaking: $text")
         mainHandler.post {
-            Toast.makeText(context, "J.A.R.V.I.S.: $text", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "G.H.O.S.T.: $text", Toast.LENGTH_SHORT).show()
         }
 
         if (!isTtsInitialized) {
             Log.w("GhostBrain", "TTS not ready yet. Queuing text: $text")
             pendingSpeakText = text
+            pendingOnDone = onDone
             updateState(BrainState.PROCESSING)
             return
         }
@@ -157,7 +170,7 @@ class GhostBrain(
                             if (currentState == BrainState.IDLE) {
                                 startListening(isWakeWordLoop = true)
                             }
-                        }, 500)
+                        }, 400)
                     }
                 }
             }
@@ -243,7 +256,7 @@ class GhostBrain(
                 }
                 updateState(BrainState.ERROR)
                 scope.launch {
-                    kotlinx.coroutines.delay(1500)
+                    delay(1500)
                     updateState(BrainState.IDLE)
                 }
                 return@post
@@ -256,7 +269,7 @@ class GhostBrain(
                 }
                 updateState(BrainState.ERROR)
                 scope.launch {
-                    kotlinx.coroutines.delay(1500)
+                    delay(1500)
                     updateState(BrainState.IDLE)
                 }
                 return@post
@@ -283,7 +296,7 @@ class GhostBrain(
                 Log.e("GhostBrain", "Failed to start listening: ${e.message}", e)
                 updateState(BrainState.ERROR)
                 scope.launch {
-                    kotlinx.coroutines.delay(1500)
+                    delay(1500)
                     updateState(BrainState.IDLE)
                 }
             }
@@ -370,10 +383,10 @@ class GhostBrain(
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Insufficient permissions" to "Microphone permission is required, $userName."
             SpeechRecognizer.ERROR_NETWORK -> "Network failure" to "Network connection lost, $userName."
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Network timeout" to "Speech recognition timed out, $userName."
-            SpeechRecognizer.ERROR_NO_MATCH -> "No speech recognized" to "I didn't quite catch that, $userName. Tap the reticle to retry."
+            SpeechRecognizer.ERROR_NO_MATCH -> "No speech recognized" to "I didn't catch that, $userName. Tap to retry."
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Recognizer busy" to null
             SpeechRecognizer.ERROR_SERVER -> "Server error" to "Speech recognition server error, $userName."
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech detected" to "No speech detected, $userName."
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech detected" to null
             else -> "Speech error ($error)" to null
         }
         Log.e("GhostBrain", "SpeechRecognizer error: $errorMsg ($error)")
@@ -383,13 +396,13 @@ class GhostBrain(
             ensureSpeechRecognizer()
         }
 
-        // If continuous wake word mode is active, silently loop without intrusive errors
+        // If continuous wake word mode is active, restart seamlessly without intrusive speech
         if (ThemeManager.isWakeWordEnabled(context) &&
             (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
         ) {
             updateState(BrainState.IDLE)
             scope.launch {
-                delay(400)
+                delay(300)
                 if (currentState == BrainState.IDLE) {
                     startListening(isWakeWordLoop = true)
                 }
@@ -406,7 +419,7 @@ class GhostBrain(
             if (spokenResponse != null) {
                 speak(spokenResponse)
             } else {
-                kotlinx.coroutines.delay(1200)
+                delay(1000)
                 updateState(BrainState.IDLE)
             }
         }
@@ -436,252 +449,316 @@ class GhostBrain(
 
     override fun onEvent(eventType: Int, params: Bundle?) {}
 
-    fun processIntent(rawQuery: String) {
+    /**
+     * Main Intent Routing and Execution Engine.
+     * Maps voice input to actions using IntentRouter and delivers spoken feedback.
+     */
+    fun processIntent(rawQuery: String, onComplete: (() -> Unit)? = null) {
         updateState(BrainState.PROCESSING)
         val userName = getUserName()
-        val trimmed = rawQuery.trim()
+        val intent = IntentRouter.routeIntent(rawQuery)
 
-        // Wake word pattern matching for "GHOST" / "HEY GHOST" / "OK GHOST"
-        val wakeWordRegex = Regex("^(?:hey\\s+|ok\\s+|okay\\s+|yo\\s+)?ghost(?:[,\\s]+(?:please\\s+)?)?", RegexOption.IGNORE_CASE)
-        val isWakeWordInvocation = wakeWordRegex.containsMatchIn(trimmed)
-
-        // Strip the wake word prefix if present
-        val effectiveQuery = if (isWakeWordInvocation) {
-            trimmed.replace(wakeWordRegex, "").trim()
-        } else {
-            trimmed
-        }
-
-        // If user spoke ONLY the wake word (e.g. "GHOST" or "Hey Ghost" or "Ghost wake up")
-        if (isWakeWordInvocation && (effectiveQuery.isBlank() || effectiveQuery.equals("wake up", ignoreCase = true))) {
-            vibrate(80)
-            speak("Yes, $userName? G.H.O.S.T. online and listening.") {
-                startListening(isWakeWordLoop = false)
-            }
-            return
-        }
-
-        // 1. Social & Contact Messaging Directive (WhatsApp, Instagram, Facebook, SMS)
-        val messagingDirective = SocialMessagingManager.parseDirective(effectiveQuery)
-        if (messagingDirective != null) {
-            val (_, reply) = SocialMessagingManager.dispatchMessage(context, messagingDirective, userName)
-            speak(reply)
-            return
-        }
-
-        val command = effectiveQuery.lowercase(Locale.US)
-
-        when {
-            // Greetings & Identity (Addressing Abdur)
-            command.matches(Regex("^(hello|hi|hey|ghost|jarvis|wake up|systems? online).*")) -> {
-                speak("G.H.O.S.T. systems online and awaiting your orders, $userName.")
-            }
-            command.contains("who are you") || command.contains("what are you") || command.contains("your name") || command.contains("identify yourself") -> {
-                speak("I am J.A.R.V.I.S., operational within the G.H.O.S.T. terminal. Your personal tactical assistant, $userName.")
-            }
-            command.contains("what can you do") || command == "help" || command.contains("commands") -> {
-                speak("I can toggle the illuminator, check power cells, launch apps like Chrome, navigate system screens, adjust volume, place calls, and query tactical intelligence, $userName.")
-            }
-            command.contains("status report") || command.contains("system status") || command.contains("how are you") -> {
-                val battery = systemBridge.getBatteryStatus()
-                val accessibility = if (GhostAccessibilityService.isRunning) "operational" else "offline"
-                speak("Status report for $userName: Battery is at ${battery.percentage} percent. Accessibility node engine is $accessibility.")
-            }
-
-            // Current Time & Date
-            command.contains("what time") || command == "time" || command.contains("current time") -> {
-                val timeStr = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())
-                speak("The current time is $timeStr, $userName.")
-            }
-            command.contains("what date") || command == "date" || command.contains("today's date") || command.contains("what day") -> {
-                val dateStr = SimpleDateFormat("EEEE, MMMM d, yyyy", Locale.getDefault()).format(Date())
-                speak("Today is $dateStr, $userName.")
-            }
-
-            // Hardware: Flashlight / Torch ON
-            command.contains("torch on") || command.contains("flashlight on") ||
-            command.contains("turn on torch") || command.contains("turn on flashlight") ||
-            command.contains("turn on the torch") || command.contains("turn on the flashlight") ||
-            command.contains("enable torch") || command.contains("light on") -> {
-                val res = systemBridge.setTorchMode(true)
-                if (res.isSuccess) {
-                    speak("Tactical illuminator engaged, $userName.")
-                } else {
-                    speak("Failed to engage illuminator, $userName.")
-                }
-            }
-
-            // Hardware: Flashlight / Torch OFF
-            command.contains("torch off") || command.contains("flashlight off") ||
-            command.contains("turn off torch") || command.contains("turn off flashlight") ||
-            command.contains("turn off the torch") || command.contains("turn off the flashlight") ||
-            command.contains("disable torch") || command.contains("light off") -> {
-                val res = systemBridge.setTorchMode(false)
-                if (res.isSuccess) {
-                    speak("Tactical illuminator disengaged, $userName.")
-                } else {
-                    speak("Failed to disengage illuminator, $userName.")
-                }
-            }
-
-            // Hardware: Flashlight Toggle
-            command == "torch" || command == "flashlight" || command.contains("toggle torch") || command.contains("toggle flashlight") -> {
-                val res = systemBridge.toggleTorch()
-                if (res.isSuccess) {
-                    val state = if (res.getOrDefault(false)) "engaged" else "disengaged"
-                    speak("Tactical illuminator $state, $userName.")
-                } else {
-                    speak("Unable to toggle illuminator, $userName.")
-                }
-            }
-
-            // Hardware: Battery Status
-            command.contains("battery") || command.contains("power status") || command.contains("charge level") -> {
-                val battery = systemBridge.getBatteryStatus()
-                val chargingText = if (battery.isCharging) "charging" else "discharging"
-                speak("Power cell at ${battery.percentage} percent, $userName. Status: $chargingText. Thermal reading: ${battery.temperatureCelsius} degrees.")
-            }
-
-            // Audio Volume Control
-            command.contains("volume up") || command.contains("increase volume") || command.contains("louder") || command.contains("raise volume") -> {
-                systemBridge.adjustMediaVolume(true)
-                speak("Media volume increased for you, $userName.")
-            }
-            command.contains("volume down") || command.contains("decrease volume") || command.contains("lower volume") || command.contains("quieter") -> {
-                systemBridge.adjustMediaVolume(false)
-                speak("Media volume decreased for you, $userName.")
-            }
-
-            // Settings Shortcuts
-            command.contains("open wifi") || command.contains("wifi settings") || command == "wifi" || command == "wi-fi" -> {
-                systemBridge.openWifiSettings()
-                speak("Accessing Wi-Fi configuration, $userName.")
-            }
-            command.contains("open bluetooth") || command.contains("bluetooth settings") || command == "bluetooth" -> {
-                systemBridge.openBluetoothSettings()
-                speak("Accessing Bluetooth configuration, $userName.")
-            }
-
-            // Accessibility: Navigation
-            command == "go back" || command == "back" || command == "previous" -> {
-                val handled = GhostAccessibilityService.instance?.performGlobalBack() ?: false
-                if (handled) {
-                    speak("Navigating back, $userName.")
-                } else {
-                    speak("Accessibility service inactive, $userName.")
-                }
-            }
-            command == "go home" || command == "home" || command.contains("home screen") -> {
-                val handled = GhostAccessibilityService.instance?.performGlobalHome() ?: false
-                if (handled) {
-                    speak("Returning to home screen, $userName.")
-                } else {
-                    speak("Accessibility service inactive, $userName.")
-                }
-            }
-            command.contains("recent") || command.contains("switch app") || command.contains("overview") -> {
-                val handled = GhostAccessibilityService.instance?.performGlobalRecents() ?: false
-                if (handled) {
-                    speak("Displaying recent tasks, $userName.")
-                } else {
-                    speak("Accessibility service inactive, $userName.")
-                }
-            }
-            command.contains("notification") -> {
-                val handled = GhostAccessibilityService.instance?.performGlobalNotifications() ?: false
-                if (handled) {
-                    speak("Opening notifications, $userName.")
-                } else {
-                    speak("Accessibility service inactive, $userName.")
-                }
-            }
-            command.contains("screenshot") || command.contains("capture screen") -> {
-                val handled = GhostAccessibilityService.instance?.performGlobalScreenshot() ?: false
-                if (handled) {
-                    speak("Capturing screen, $userName.")
-                } else {
-                    speak("Screen capture unavailable, $userName.")
-                }
-            }
-            command.contains("lock screen") || command.contains("lock phone") || command.contains("lock device") -> {
-                val handled = GhostAccessibilityService.instance?.performGlobalLock() ?: false
-                if (handled) {
-                    speak("Terminal locked, $userName.")
-                } else {
-                    speak("Lock service unavailable, $userName.")
-                }
-            }
-
-            // Accessibility: Click by label
-            command.startsWith("click ") || command.startsWith("press ") || command.startsWith("tap ") -> {
-                val targetLabel = rawQuery.replace(Regex("^(click|press|tap)\\s+", RegexOption.IGNORE_CASE), "").trim()
-                val service = GhostAccessibilityService.instance
-                if (service != null) {
-                    val clicked = service.clickElementByText(targetLabel)
-                    if (clicked) {
-                        speak("Target clicked, $userName.")
-                    } else {
-                        speak("Unable to locate element $targetLabel, $userName.")
+        scope.launch {
+            when (intent) {
+                // 1. Device Toggles (Bluetooth, Wifi, Hotspot, Mobile Data)
+                is GhostIntent.DeviceToggle -> {
+                    val result = DeviceToggleManager.executeToggle(context, intent.device, intent.action, userName)
+                    val reply = when (result) {
+                        is DeviceToggleManager.ToggleResult.DirectSuccess -> result.message
+                        is DeviceToggleManager.ToggleResult.SettingsOpened -> result.message
+                        is DeviceToggleManager.ToggleResult.Error -> result.message
                     }
-                } else {
-                    speak("Accessibility node engine is unbound, $userName.")
+                    speak(reply, onComplete)
                 }
-            }
 
-            // Application Launching (Comprehensive Chrome & App Resolution)
-            command.startsWith("open ") || command.startsWith("launch ") || command.startsWith("start ") -> {
-                val appTarget = rawQuery.replace(Regex("^(open|launch|start)\\s+", RegexOption.IGNORE_CASE), "").trim()
-                launchApplicationByName(appTarget)
-            }
+                // 2. Music Playback & Media Controls
+                is GhostIntent.PlayMusic -> {
+                    val reply = MusicManager.playFromSearch(context, intent.query ?: "", userName)
+                    speak(reply, onComplete)
+                }
+                is GhostIntent.MediaControl -> {
+                    val reply = MusicManager.controlMedia(context, intent.action, userName)
+                    speak(reply, onComplete)
+                }
 
-            // Direct Cellular Call
-            command.startsWith("call ") || command.startsWith("dial ") -> {
-                val targetNumber = rawQuery.replace(Regex("^(call|dial)\\s+", RegexOption.IGNORE_CASE), "").trim()
-                executeDirectCall(targetNumber)
-            }
+                // 3. Messaging (SMS / WhatsApp)
+                is GhostIntent.SendMessage -> {
+                    val reply = ContactMessagingManager.sendMessage(
+                        context,
+                        intent.contact,
+                        intent.messageText,
+                        intent.preferWhatsApp,
+                        userName
+                    )
+                    speak(reply, onComplete)
+                }
 
-            // Direct SMS Routing
-            command.startsWith("text ") || command.startsWith("message ") || command.startsWith("sms ") -> {
-                executeSmsRouting(rawQuery)
-            }
+                // 4. Phone Calls
+                is GhostIntent.CallContact -> {
+                    executeDirectCall(intent.target, userName, onComplete)
+                }
 
-            // Fallback: Web Intelligence / Knowledge Engine
-            else -> {
-                resolveWebQuery(rawQuery)
+                // 5. Flashlight / Torch
+                is GhostIntent.Flashlight -> {
+                    val reply = when (intent.action) {
+                        DeviceToggleManager.ToggleAction.ON -> {
+                            val ok = systemBridge.setTorchMode(true).isSuccess
+                            if (ok) "Tactical illuminator engaged, $userName." else "Failed to engage illuminator, $userName."
+                        }
+                        DeviceToggleManager.ToggleAction.OFF -> {
+                            val ok = systemBridge.setTorchMode(false).isSuccess
+                            if (ok) "Tactical illuminator disengaged, $userName." else "Failed to disengage illuminator, $userName."
+                        }
+                        DeviceToggleManager.ToggleAction.TOGGLE -> {
+                            val res = systemBridge.toggleTorch()
+                            if (res.isSuccess) {
+                                val state = if (res.getOrDefault(false)) "engaged" else "disengaged"
+                                "Tactical illuminator $state, $userName."
+                            } else {
+                                "Unable to toggle illuminator, $userName."
+                            }
+                        }
+                    }
+                    speak(reply, onComplete)
+                }
+
+                // 6. Volume Control
+                is GhostIntent.VolumeControl -> {
+                    val reply = when (intent.action) {
+                        GhostIntent.VolumeAction.UP -> {
+                            systemBridge.adjustMediaVolume(true)
+                            "Media volume increased, $userName."
+                        }
+                        GhostIntent.VolumeAction.DOWN -> {
+                            systemBridge.adjustMediaVolume(false)
+                            "Media volume decreased, $userName."
+                        }
+                        GhostIntent.VolumeAction.MUTE -> {
+                            systemBridge.setMediaVolumeMute(true)
+                            "Audio muted, $userName."
+                        }
+                        GhostIntent.VolumeAction.UNMUTE -> {
+                            systemBridge.setMediaVolumeMute(false)
+                            "Audio unmuted, $userName."
+                        }
+                        GhostIntent.VolumeAction.SET_PERCENT -> {
+                            val pct = intent.percent ?: 50
+                            systemBridge.setMediaVolumePercent(pct)
+                            "Media volume set to $pct percent, $userName."
+                        }
+                    }
+                    speak(reply, onComplete)
+                }
+
+                // 7. Brightness Control
+                is GhostIntent.BrightnessControl -> {
+                    val reply = when (intent.action) {
+                        GhostIntent.BrightnessAction.UP -> systemBridge.adjustBrightnessRelative(true, userName)
+                        GhostIntent.BrightnessAction.DOWN -> systemBridge.adjustBrightnessRelative(false, userName)
+                        GhostIntent.BrightnessAction.MAX -> systemBridge.setBrightnessPercent(100, userName)
+                        GhostIntent.BrightnessAction.MIN -> systemBridge.setBrightnessPercent(10, userName)
+                        GhostIntent.BrightnessAction.SET_PERCENT -> systemBridge.setBrightnessPercent(intent.percent ?: 50, userName)
+                    }
+                    speak(reply, onComplete)
+                }
+
+                // 8. Open Apps by Name
+                is GhostIntent.OpenApp -> {
+                    launchApplicationByName(intent.appName, userName, onComplete)
+                }
+
+                // 9. Alarms, Timers, Reminders
+                is GhostIntent.SetAlarm -> {
+                    val reply = AlarmClockManager.setAlarm(context, intent.hour, intent.minute, intent.label, userName)
+                    speak(reply, onComplete)
+                }
+                is GhostIntent.SetTimer -> {
+                    val reply = AlarmClockManager.setTimer(context, intent.seconds, intent.label, userName)
+                    speak(reply, onComplete)
+                }
+                is GhostIntent.SetReminder -> {
+                    val reply = AlarmClockManager.setReminder(context, intent.text, userName)
+                    speak(reply, onComplete)
+                }
+
+                // 10. Calendar Events
+                is GhostIntent.ReadCalendar -> {
+                    val reply = CalendarManager.getTodayEventsReadout(context, userName)
+                    speak(reply, onComplete)
+                }
+
+                // 11. Read & Reply Notifications
+                is GhostIntent.ReadNotifications -> {
+                    val reply = GhostNotificationListenerService.getRecentNotificationsSummary(context, userName)
+                    speak(reply, onComplete)
+                }
+                is GhostIntent.ReplyNotification -> {
+                    val reply = GhostNotificationListenerService.replyToLatestNotification(context, intent.text, userName)
+                    speak(reply, onComplete)
+                }
+
+                // 12. Battery Status
+                is GhostIntent.BatteryStatus -> {
+                    val battery = systemBridge.getBatteryStatus()
+                    val chargingText = if (battery.isCharging) "charging" else "discharging"
+                    val reply = "Power cell at ${battery.percentage} percent, $userName. Status: $chargingText. Temperature reading: ${battery.temperatureCelsius} degrees Celsius."
+                    speak(reply, onComplete)
+                }
+
+                // 13. Weather Lookup
+                is GhostIntent.Weather -> {
+                    val reply = WeatherManager.getWeatherSummary(intent.location, userName)
+                    speak(reply, onComplete)
+                }
+
+                // 14. Screenshot & Lock Screen
+                is GhostIntent.TakeScreenshot -> {
+                    val handled = GhostAccessibilityService.instance?.performGlobalScreenshot() ?: false
+                    val reply = if (handled) "Capturing screen for you, $userName." else "Accessibility node required to capture screen, $userName."
+                    speak(reply, onComplete)
+                }
+                is GhostIntent.LockScreen -> {
+                    val handled = GhostAccessibilityService.instance?.performGlobalLock() ?: false
+                    val reply = if (handled) "Workstation locked, $userName." else "Accessibility node required to lock screen, $userName."
+                    speak(reply, onComplete)
+                }
+
+                // 15. Laptop Companion Mode
+                is GhostIntent.CompanionCommand -> {
+                    val reply = CompanionManager.executeCompanionDirective(context, intent.command, intent.arg, userName)
+                    speak(reply, onComplete)
+                }
+
+                // 16. Accessibility Navigation
+                is GhostIntent.SystemNavigation -> {
+                    val service = GhostAccessibilityService.instance
+                    val reply = when (intent.action) {
+                        GhostIntent.NavAction.BACK -> {
+                            if (service?.performGlobalBack() == true) "Navigating back, $userName." else "Accessibility service inactive, $userName."
+                        }
+                        GhostIntent.NavAction.HOME -> {
+                            if (service?.performGlobalHome() == true) "Returning home, $userName." else "Accessibility service inactive, $userName."
+                        }
+                        GhostIntent.NavAction.RECENTS -> {
+                            if (service?.performGlobalRecents() == true) "Displaying recent tasks, $userName." else "Accessibility service inactive, $userName."
+                        }
+                        GhostIntent.NavAction.NOTIFICATIONS -> {
+                            if (service?.performGlobalNotifications() == true) "Opening notifications, $userName." else "Accessibility service inactive, $userName."
+                        }
+                        GhostIntent.NavAction.CLICK -> {
+                            val target = intent.targetText ?: ""
+                            if (service?.clickElementByText(target) == true) "Clicked on $target, $userName." else "Unable to find $target on screen, $userName."
+                        }
+                    }
+                    speak(reply, onComplete)
+                }
+
+                // 17. Time & Date
+                is GhostIntent.DateTime -> {
+                    val reply = if (intent.isTime) {
+                        val timeStr = SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date())
+                        "The time is $timeStr, $userName."
+                    } else {
+                        val dateStr = SimpleDateFormat("EEEE, MMMM d, yyyy", Locale.getDefault()).format(Date())
+                        "Today is $dateStr, $userName."
+                    }
+                    speak(reply, onComplete)
+                }
+
+                // 18. System Info & Greetings
+                is GhostIntent.SystemStatus -> {
+                    val battery = systemBridge.getBatteryStatus()
+                    val accessOk = if (GhostAccessibilityService.isRunning) "active" else "offline"
+                    val wakeWordOk = if (ThemeManager.isWakeWordEnabled(context)) "active" else "standby"
+                    speak("System diagnostics nominal, $userName. Battery: ${battery.percentage}%. Accessibility: $accessOk. Wake Word: $wakeWordOk.", onComplete)
+                }
+                is GhostIntent.Identity -> {
+                    speak("I am J.A.R.V.I.S., operational within the G.H.O.S.T. mobile terminal. Your personal tactical assistant, $userName.", onComplete)
+                }
+                is GhostIntent.Help -> {
+                    speak("I can toggle Wi-Fi, Bluetooth, hotspot, mobile data, play music, send messages, place calls, set alarms, check the weather, control volume and brightness, launch apps, and control your laptop companion, $userName.", onComplete)
+                }
+                is GhostIntent.Greeting -> {
+                    speak("G.H.O.S.T. systems online and ready for your commands, $userName.", onComplete)
+                }
+
+                // 19. Web Search
+                is GhostIntent.WebSearch -> {
+                    val brief = withContext(Dispatchers.IO) {
+                        queryWikipediaOrDuckDuckGo(intent.query, userName)
+                    }
+                    speak(brief, onComplete)
+                }
+
+                // 20. Clear spoken fallback for unrecognized commands ("no action found" issue)
+                is GhostIntent.Unknown -> {
+                    speak("I didn't catch a command for that, $userName. Say 'help' to hear available commands.", onComplete)
+                }
             }
         }
     }
 
-    private fun launchApplicationByName(name: String) {
-        val userName = getUserName()
+    private fun executeDirectCall(phoneNumberOrName: String, userName: String, onDone: (() -> Unit)?) {
+        val resolved = ContactMessagingManager.resolveContact(context, phoneNumberOrName)
+        val targetNumber = resolved?.phoneNumber ?: phoneNumberOrName.replace(Regex("[^0-9+]"), "")
+
+        if (targetNumber.isBlank()) {
+            speak("I was unable to locate $phoneNumberOrName in your contacts, $userName.", onDone)
+            return
+        }
+
+        val displayName = resolved?.displayName ?: targetNumber
+
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
+            val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$targetNumber")).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            try {
+                context.startActivity(callIntent)
+                speak("Initiating call to $displayName, $userName.", onDone)
+                return
+            } catch (_: Exception) {}
+        }
+
+        // Fallback to dialer
+        val dialIntent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$targetNumber")).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            context.startActivity(dialIntent)
+            speak("Opening dialer for $displayName, $userName.", onDone)
+        } catch (e: Exception) {
+            speak("Unable to place call to $displayName, $userName.", onDone)
+        }
+    }
+
+    private fun launchApplicationByName(name: String, userName: String, onDone: (() -> Unit)?) {
         val pm = context.packageManager
         val cleanName = name.lowercase(Locale.US).trim()
 
-        // 1. Special Browser & Chrome handling (guaranteed success)
+        // 1. Chrome & Browser
         if (cleanName.contains("chrome") || cleanName.contains("browser") || cleanName.contains("internet") || cleanName == "web") {
-            // Try direct Chrome package
             val chromeLaunch = pm.getLaunchIntentForPackage("com.android.chrome")
             if (chromeLaunch != null) {
                 chromeLaunch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(chromeLaunch)
-                speak("Deploying Chrome for you, $userName.")
+                speak("Opening Chrome for you, $userName.", onDone)
                 return
             }
 
-            // Try default browser intent
             val browserIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com")).apply {
                 addCategory(Intent.CATEGORY_BROWSABLE)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             if (browserIntent.resolveActivity(pm) != null) {
                 context.startActivity(browserIntent)
-                speak("Deploying browser for you, $userName.")
+                speak("Opening web browser for you, $userName.", onDone)
                 return
             }
         }
 
-        // 2. Common application aliases
-        val aliasPackageMap = mapOf(
+        // 2. App aliases
+        val aliasMap = mapOf(
             "youtube" to "com.google.android.youtube",
             "whatsapp" to "com.whatsapp",
             "maps" to "com.google.android.apps.maps",
@@ -700,18 +777,18 @@ class GhostBrain(
             "terminal" to "com.termux"
         )
 
-        val targetPkg = aliasPackageMap[cleanName]
+        val targetPkg = aliasMap[cleanName]
         if (targetPkg != null) {
             val intent = pm.getLaunchIntentForPackage(targetPkg)
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 context.startActivity(intent)
-                speak("Deploying $name for you, $userName.")
+                speak("Opening $name for you, $userName.", onDone)
                 return
             }
         }
 
-        // 3. Fallback system action intents
+        // 3. Fallback standard intents
         when (cleanName) {
             "camera" -> {
                 val camIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE).apply {
@@ -719,7 +796,7 @@ class GhostBrain(
                 }
                 if (camIntent.resolveActivity(pm) != null) {
                     context.startActivity(camIntent)
-                    speak("Deploying optical camera, $userName.")
+                    speak("Opening camera, $userName.", onDone)
                     return
                 }
             }
@@ -728,7 +805,7 @@ class GhostBrain(
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(setIntent)
-                speak("Deploying system settings, $userName.")
+                speak("Opening settings, $userName.", onDone)
                 return
             }
             "phone", "dialer" -> {
@@ -736,7 +813,7 @@ class GhostBrain(
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(dialIntent)
-                speak("Deploying dialer interface, $userName.")
+                speak("Opening dialer, $userName.", onDone)
                 return
             }
             "clock", "alarm" -> {
@@ -745,13 +822,13 @@ class GhostBrain(
                 }
                 if (clockIntent.resolveActivity(pm) != null) {
                     context.startActivity(clockIntent)
-                    speak("Deploying chronometer alarms, $userName.")
+                    speak("Opening alarms, $userName.", onDone)
                     return
                 }
             }
         }
 
-        // 4. Query all launcher activities installed on device
+        // 4. Query installed launcher apps
         try {
             val launcherIntent = Intent(Intent.ACTION_MAIN, null).apply {
                 addCategory(Intent.CATEGORY_LAUNCHER)
@@ -764,85 +841,20 @@ class GhostBrain(
             }
 
             if (matchedActivity != null) {
-                val intent = pm.getLaunchIntentForPackage(matchedActivity.activityInfo.packageName)?.apply {
+                val launchIntent = pm.getLaunchIntentForPackage(matchedActivity.activityInfo.packageName)?.apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
-                if (intent != null) {
-                    context.startActivity(intent)
-                    speak("Deploying ${matchedActivity.loadLabel(pm)} for you, $userName.")
+                if (launchIntent != null) {
+                    context.startActivity(launchIntent)
+                    speak("Opening ${matchedActivity.loadLabel(pm)} for you, $userName.", onDone)
                     return
                 }
             }
         } catch (e: Exception) {
-            Log.w("GhostBrain", "Error querying launcher activities: ${e.message}")
+            Log.w("GhostBrain", "Error searching launcher apps: ${e.message}")
         }
 
-        // 5. Query all installed packages
-        try {
-            val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
-            val match = installedApps.firstOrNull { app ->
-                val label = pm.getApplicationLabel(app).toString().lowercase(Locale.US)
-                label == cleanName || label.contains(cleanName) || app.packageName.lowercase(Locale.US).contains(cleanName)
-            }
-
-            if (match != null) {
-                val intent = pm.getLaunchIntentForPackage(match.packageName)?.apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                if (intent != null) {
-                    context.startActivity(intent)
-                    speak("Deploying ${pm.getApplicationLabel(match)} for you, $userName.")
-                    return
-                }
-            }
-        } catch (e: Exception) {
-            Log.w("GhostBrain", "Error querying installed apps: ${e.message}")
-        }
-
-        speak("I was unable to identify $name on this device, $userName.")
-    }
-
-    private fun executeDirectCall(phoneNumberOrName: String) {
-        val userName = getUserName()
-        val resolved = SocialMessagingManager.resolveContact(context, phoneNumberOrName)
-        val targetNumber = resolved?.phoneNumber ?: phoneNumberOrName.replace(Regex("[^0-9+]"), "")
-
-        if (targetNumber.isBlank()) {
-            speak("I was unable to locate $phoneNumberOrName in your contact ledger, $userName.")
-            return
-        }
-
-        val displayName = resolved?.displayName ?: targetNumber
-        val callIntent = Intent(Intent.ACTION_CALL, Uri.parse("tel:$targetNumber")).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            context.startActivity(callIntent)
-            speak("Initiating cellular link to $displayName, $userName.")
-        } catch (e: SecurityException) {
-            speak("Cellular dial permission denied, $userName.")
-        }
-    }
-
-    private fun executeSmsRouting(command: String) {
-        val userName = getUserName()
-        val directive = SocialMessagingManager.parseDirective(command)
-        if (directive != null) {
-            val (_, reply) = SocialMessagingManager.dispatchMessage(context, directive, userName)
-            speak(reply)
-        } else {
-            speak("Please state the recipient and your message, $userName. For example: send message to John hello.", null)
-        }
-    }
-
-    private fun resolveWebQuery(query: String) {
-        val userName = getUserName()
-        scope.launch {
-            val brief = withContext(Dispatchers.IO) {
-                queryWikipediaOrDuckDuckGo(query, userName)
-            }
-            speak(brief)
-        }
+        speak("I was unable to find $name on this device, $userName.", onDone)
     }
 
     private fun queryWikipediaOrDuckDuckGo(query: String, userName: String): String {
@@ -854,8 +866,8 @@ class GhostBrain(
             val wikiUrl = URL("https://en.wikipedia.org/api/rest_v1/page/summary/$encodedWiki")
             val conn = wikiUrl.openConnection() as HttpURLConnection
             conn.setRequestProperty("User-Agent", "GHOST-Assistant/1.0 (Android; Linux)")
-            conn.connectTimeout = 3500
-            conn.readTimeout = 3500
+            conn.connectTimeout = 3000
+            conn.readTimeout = 3000
             conn.requestMethod = "GET"
 
             if (conn.responseCode == 200) {
@@ -878,12 +890,11 @@ class GhostBrain(
             val url = URL("https://api.duckduckgo.com/?q=$encoded&format=json&no_html=1&skip_disambig=1")
             val conn = url.openConnection() as HttpURLConnection
             conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Android; Mobile; Linux)")
-            conn.connectTimeout = 3500
-            conn.readTimeout = 3500
+            conn.connectTimeout = 3000
+            conn.readTimeout = 3000
             conn.requestMethod = "GET"
 
-            val code = conn.responseCode
-            if (code == 200 || code == 202) {
+            if (conn.responseCode == 200 || conn.responseCode == 202) {
                 val stream = conn.inputStream
                 val response = BufferedReader(InputStreamReader(stream)).readText()
                 val json = JSONObject(response)

@@ -16,7 +16,12 @@ object ThemeManager {
     private const val KEY_AI_CUSTOM_ENDPOINT = "key_ai_custom_endpoint"
     private const val KEY_WAKE_WORD_ENABLED = "key_wake_word_enabled"
 
+    private const val KEY_COMPANION_HOST = "key_companion_host"
+    private const val KEY_COMPANION_PORT = "key_companion_port"
+
     const val DEFAULT_USER_CALLSIGN = "Abdur"
+    const val DEFAULT_COMPANION_HOST = "192.168.1.100"
+    const val DEFAULT_COMPANION_PORT = 8080
     const val WAKE_WORD = "GHOST"
 
     enum class ThemeMode {
@@ -75,6 +80,22 @@ object ThemeManager {
 
     fun setAiCustomEndpoint(context: Context, endpoint: String) {
         getPrefs(context).edit().putString(KEY_AI_CUSTOM_ENDPOINT, endpoint.trim()).apply()
+    }
+
+    fun getCompanionHost(context: Context): String {
+        return getPrefs(context).getString(KEY_COMPANION_HOST, DEFAULT_COMPANION_HOST) ?: DEFAULT_COMPANION_HOST
+    }
+
+    fun setCompanionHost(context: Context, host: String) {
+        getPrefs(context).edit().putString(KEY_COMPANION_HOST, host.trim()).apply()
+    }
+
+    fun getCompanionPort(context: Context): Int {
+        return getPrefs(context).getInt(KEY_COMPANION_PORT, DEFAULT_COMPANION_PORT)
+    }
+
+    fun setCompanionPort(context: Context, port: Int) {
+        getPrefs(context).edit().putInt(KEY_COMPANION_PORT, port).apply()
     }
 
     fun isWakeWordEnabled(context: Context): Boolean {
